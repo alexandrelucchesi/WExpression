@@ -12,12 +12,10 @@ module WExpression
 
 -- IMPORTS
 import Control.Applicative
-    ( (<*>)
-    , (*>)
+    ( (*>)
     , (<*)
     , (<$>)
     , (<|>)
-    , pure
     )
 
 import Control.Monad
@@ -119,60 +117,78 @@ eval (App idt args) env fds =
             (f:fs) -> error ("multiple definitions of " ++ idt)
 
 -- PARSERS
-
--- Helper Parsers
+-- Helpers
 pId :: Parser Id
-pId = T.unpack <$> (A.skipSpace *> ((T.append <$> (T.singleton <$> A.satisfy isAlpha)) <*> A.takeWhile isAlphaNum))
+pId = do A.skipSpace
+         id@(x:xs) <- fmap T.unpack (A.takeWhile isAlphaNum)
+         if isAlpha x
+           then return id
+         else fail $ "Invalid identifier: " ++ id ++ "."
 
-pOperator :: Parser Expression
-pOperator = pConst <|>
-            pExpId
+pSymbol :: T.Text -> Parser T.Text
+pSymbol s = do A.skipSpace
+               A.string s
 
-pSpecialChar :: Char -> Parser Char
-pSpecialChar = \c -> A.skipSpace *> A.char c
-
-pKeyword :: T.Text -> Parser T.Text
-pKeyword = \keyword -> A.skipSpace *> A.string keyword
 
 -- Parsers for Expressions
--- (Using Applicative Functors)
-pExpression :: Parser Expression
-pExpression = pLet   <|>
-              pAdd   <|>
-              pSub   <|>
-              pApp   <|>
-              pExpId <|>
-              pConst
-
 pConst :: Parser Expression
 pConst = Const <$> (A.skipSpace *> A.decimal)
 
-pAdd :: Parser Expression
-pAdd = Add <$> (pOperator <* pSpecialChar '+') <*> pOperator
-
-pSub :: Parser Expression
-pSub = Sub <$> (pOperator <* pSpecialChar '-') <*> pOperator
+pLet :: Parser Expression
+pLet = do pSymbol "let"
+          id <- pId
+          pSymbol "="
+          e1 <- pExpression
+          pSymbol "in"
+          e2 <- pExpression
+          return (Let id e1 e2)
 
 pExpId :: Parser Expression
-pExpId = ExpId <$> pId
-
-pLet :: Parser Expression
-pLet = Let <$> (pKeyword "let" *> pId) <*> (pSpecialChar '=' *> pExpression) <*> (pKeyword "in" *> pExpression)
+pExpId = do id <- pId
+            return (ExpId id)
 
 pApp :: Parser Expression
-pApp = App <$> pId <*> (pSpecialChar '(' *> ((pExpression <* A.skipSpace) `AC.sepBy` ",") <* pSpecialChar ')')
+pApp = do id <- pId
+          pSymbol "("
+          params <- (pExpression <* A.skipSpace) `AC.sepBy` ","
+          pSymbol ")"
+          return (App id params)
+
+pAddSub :: Parser Expression
+pAddSub = do f <- pFactor
+             do pSymbol "+"
+                e <- pExpression
+                return (Add f e)
+                <|> do pSymbol "-"
+                       e <- pExpression
+                       return (Sub f e)
+                <|> return f
+
+pExpression :: Parser Expression
+pExpression = pLet    <|>
+              pApp    <|>
+              pAddSub <|>
+              pExpId
+
+pFactor :: Parser Expression
+pFactor = do pSymbol "("
+             e <- pExpression
+             pSymbol ")"
+             return e
+             <|> pConst
+             <|> pExpId
+
 
 -- Parsers for Functions
--- (Alternatively, using "do syntax")
 pFuncDecl :: Parser FuncDecl
 pFuncDecl = do
-    name <- pId
-    pSpecialChar '('
-    params <- ((pId <* A.skipSpace) `AC.sepBy` ",")
-    pSpecialChar ')'
-    pSpecialChar '='
-    expr <- pExpression
-    pure $ FuncDecl name params expr
+            name <- pId
+            pSymbol "("
+            params <- (pId <* A.skipSpace) `AC.sepBy` ","
+            pSymbol ")"
+            pSymbol "="
+            expr <- pExpression
+            return (FuncDecl name params expr)
 
 pFuncDecls :: Parser [FuncDecl]
 pFuncDecls = A.many' pFuncDecl
